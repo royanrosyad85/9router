@@ -13,19 +13,25 @@
 
 set -euo pipefail
 
-BRANCH="${1:-fix/azure-custom-endpoint}"
-REPO_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-SERVICE_UNIT="router9.service"
-PORT="${ROUTER9_PORT:-20128}"
-NO_RESTART=false
-[[ "${1:-}" == "--no-restart" ]] && { NO_RESTART=true; BRANCH="fix/azure-custom-endpoint"; }
-
-cd "$REPO_DIR"
-
 say()  { printf '\n\033[1;36m==> %s\033[0m\n' "$*"; }
 ok()   { printf '\033[1;32m ✓ %s\033[0m\n' "$*"; }
 warn() { printf '\033[1;33m ! %s\033[0m\n' "$*"; }
 die()  { printf '\033[1;31m ✗ %s\033[0m\n' "$*" >&2; exit 1; }
+
+BRANCH="fix/azure-custom-endpoint"
+NO_RESTART=false
+for arg in "$@"; do
+  case "$arg" in
+    --no-restart) NO_RESTART=true ;;
+    -*) die "Unknown option: $arg" ;;
+    *) BRANCH="$arg" ;;
+  esac
+done
+REPO_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+SERVICE_UNIT="router9.service"
+PORT="${ROUTER9_PORT:-20128}"
+
+cd "$REPO_DIR"
 
 # ---------- 0. Preflight ----------
 say "Preflight (branch: $BRANCH)"
@@ -101,15 +107,27 @@ say "Building (this can take a few minutes)"
 npm run build > /tmp/router9-build.log 2>&1 || die "Build failed — see /tmp/router9-build.log
    The service is still running the OLD build, nothing broke."
 ok "Build OK"
-BUILD_TS="$(stat -c %Y .next/BUILD_ID 2>/dev/null || echo 0)"
+# ponytail: GNU stat on Linux, BSD stat on macOS
+BUILD_TS="$(stat -c %Y .next/BUILD_ID 2>/dev/null || stat -f %m .next/BUILD_ID 2>/dev/null || echo 0)"
 
 # ---------- 6. Restart ----------
 if $NO_RESTART; then
-  warn "--no-restart: skipping service restart. Restart manually to apply."
-  exit 0
-fi
+  warn "--no-restart: skipping service restart (verification only)."
+else
 
 say "Restarting service"
+# ponytail: no systemd on macOS — no unit to restart, operator restarts manually
+if [[ "$(uname -s)" == "Darwin" ]] || ! command -v systemctl >/dev/null 2>&1; then
+  if command -v lsof >/dev/null 2>&1 && lsof -tiTCP:"$PORT" -sTCP:LISTEN >/dev/null 2>&1; then
+    warn "router9 is still running the OLD build on port $PORT. Restart manually:"
+    warn "  lsof -tiTCP:$PORT -sTCP:LISTEN | xargs kill && PORT=$PORT npm run router"
+  else
+    warn "router9 is not running. Start it manually:"
+    warn "  PORT=$PORT npm run router   # or: npm start"
+  fi
+  warn "Then re-run: ./scripts/update-from-origin.sh --no-restart  (verification only)"
+  exit 0
+fi
 if systemctl --user cat "$SERVICE_UNIT" >/dev/null 2>&1; then
   systemctl --user restart "$SERVICE_UNIT"
   RESTART_CMD="systemctl --user restart $SERVICE_UNIT"
@@ -124,6 +142,7 @@ sleep 8
 ACTIVE="$(systemctl --user is-active "$SERVICE_UNIT" 2>/dev/null || systemctl is-active "$SERVICE_UNIT" 2>/dev/null || echo unknown)"
 [[ "$ACTIVE" == "active" ]] || die "Service not active after restart ($ACTIVE). Check:
    journalctl --user -u $SERVICE_UNIT -n 50"
+fi
 
 # ---------- 7. Verify ----------
 say "Verifying"
@@ -136,14 +155,14 @@ CURRENT_VER="$(python3 -c "import json,sys; print(json.load(sys.stdin).get('curr
 HAS_UPDATE="$(python3 -c "import json,sys; print(json.load(sys.stdin).get('hasUpdate','?'))" <<< "$VERSION_JSON" 2>/dev/null || echo '?')"
 
 PID_START="$(systemctl --user show "$SERVICE_UNIT" -p ActiveEnterTimestamp --value 2>/dev/null \
-  || systemctl show "$SERVICE_UNIT" -p ActiveEnterTimestamp --value 2>/dev/null || echo '?')"
+  || systemctl show "$SERVICE_UNIT" -p ActiveEnterTimestamp --value 2>/dev/null || echo 'manual/unknown')"
 
-ok "Health 200 | service active (since $PID_START)"
+ok "Health 200 (service started: $PID_START)"
 ok "Live version: $CURRENT_VER (hasUpdate: $HAS_UPDATE)"
 
 if [[ "$CURRENT_VER" != "$NEW_VER" ]]; then
   die "Running process reports v$CURRENT_VER but repo is v$NEW_VER.
-     Likely restarted BEFORE build finished. Re-run: $RESTART_CMD"
+     Likely restarted BEFORE build finished. Re-run: ${RESTART_CMD:-restart the service manually}"
 fi
 if [[ "$HAS_UPDATE" == "True" ]]; then
   warn "Dashboard still flags an update available — upstream may have published newer again."
