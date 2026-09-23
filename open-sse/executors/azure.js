@@ -1,7 +1,7 @@
 import { DefaultExecutor } from "./default.js";
 
 const GPT5_OR_REASONING_MODEL =
-  /(?:^|[/_-])(?:gpt-5|o(?:1|3|4))(?:[._-]|$)/i;
+  /(?:^|[/_-])(?:gpt-(?:5|6)|o(?:1|3|4))(?:[._-]|$)/i;
 
 export class AzureExecutor extends DefaultExecutor {
   constructor() {

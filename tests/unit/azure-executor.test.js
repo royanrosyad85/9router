@@ -48,6 +48,19 @@ describe("AzureExecutor", () => {
     expect(result).toEqual({ max_completion_tokens: 8192 });
   });
 
+  it("applies reasoning-model request normalization to GPT-6 deployments", () => {
+    const result = executor.transformRequest("gpt-6-sol-20260923-global", {
+      max_tokens: 2048,
+      temperature: 0.2,
+      messages: [{ role: "user", content: "Hello" }],
+    });
+
+    expect(result).toEqual({
+      max_completion_tokens: 2048,
+      messages: [{ role: "user", content: "Hello" }],
+    });
+  });
+
   it("omits custom temperature but preserves the supported default", () => {
     expect(
       executor.transformRequest("gpt-5-chat-deployment", { temperature: 0.2 })
